@@ -57,7 +57,12 @@ let
 
   sitePackagesPath = python312.sitePackages;
 
-  pythonPath = lib.makeSearchPath sitePackagesPath extraPythonPackages;
+  # Walk propagatedBuildInputs to include transitive Python deps in PYTHONPATH.
+  # Without this, a plugin listing e.g. requests as a dep would fail at runtime
+  # if requests isn't already in the sealed uv2nix venv.
+  allExtraPythonPackages = python312.pkgs.requiredPythonModules extraPythonPackages;
+
+  pythonPath = lib.makeSearchPath sitePackagesPath allExtraPythonPackages;
 
   pyprojectHash = builtins.hashString "sha256" (builtins.readFile ../pyproject.toml);
   uvLockHash =
@@ -122,7 +127,7 @@ for di in venv_sp.glob('*.dist-info'):
                 break
 
 # Check each extra package for collisions
-extras_dirs = [${lib.concatMapStringsSep ", " (p: "'${toString p}'") extraPythonPackages}]
+extras_dirs = [${lib.concatMapStringsSep ", " (p: "'${toString p}'") allExtraPythonPackages}]
 for edir in extras_dirs:
     sp = pathlib.Path(edir) / '${sitePackagesPath}'
     if not sp.exists():
