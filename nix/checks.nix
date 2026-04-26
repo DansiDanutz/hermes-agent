@@ -195,7 +195,7 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
 
         # Verify extraPythonPackages PYTHONPATH injection
         extra-python-packages = let
-          testPkg = pkgs.python312Packages.pyyaml;
+          testPkg = pkgs.python312Packages.pyfiglet;
           hermesWithExtra = pkgs.callPackage ./hermes-agent.nix {
             inherit (inputs) uv2nix pyproject-nix pyproject-build-systems;
             npm-lockfile-fix = inputs'.npm-lockfile-fix.packages.default;
