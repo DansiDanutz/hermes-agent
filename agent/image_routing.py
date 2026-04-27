@@ -129,6 +129,17 @@ def decide_image_input_mode(
     return "text"
 
 
+# Hard ceiling for a single native image payload.  Matches vision_tools.py
+# _MAX_BASE64_BYTES — the most restrictive major provider (Gemini inline
+# data limit).  Oversized images are auto-resized via Pillow when available;
+# if resize fails or overshoots, the image is skipped and the caller falls
+# back to the text pipeline for that image.
+_MAX_IMAGE_BASE64_BYTES = 20 * 1024 * 1024  # 20 MB
+# Auto-resize target on first-try oversize.  5 MB aligns with Anthropic's
+# per-image recommendation and comfortably fits all provider inline limits.
+_RESIZE_TARGET_BYTES = 5 * 1024 * 1024
+
+
 def _guess_mime(path: Path) -> str:
     mime, _ = mimetypes.guess_type(str(path))
     if mime and mime.startswith("image/"):
@@ -147,14 +158,57 @@ def _guess_mime(path: Path) -> str:
 
 
 def _file_to_data_url(path: Path) -> Optional[str]:
+    """Encode a local image as a base64 data URL, auto-resizing if oversized.
+
+    Large images are downscaled via Pillow on a best-effort basis so that a
+    screenshot dragged in from a 5K monitor doesn't blow context or 413 the
+    provider. When Pillow isn't available and the raw file exceeds
+    ``_MAX_IMAGE_BASE64_BYTES``, returns None — the caller drops this image
+    from the native content parts (it gets reported back as ``skipped``).
+    """
     try:
-        raw = path.read_bytes()
+        file_size = path.stat().st_size
     except Exception as exc:
-        logger.warning("image_routing: failed to read %s — %s", path, exc)
+        logger.warning("image_routing: failed to stat %s — %s", path, exc)
         return None
-    mime = _guess_mime(path)
-    b64 = base64.b64encode(raw).decode("ascii")
-    return f"data:{mime};base64,{b64}"
+
+    # Base64 expands by ~4/3.  Fast-path small images.
+    estimated_b64 = (file_size * 4) // 3 + 100
+    if estimated_b64 <= _MAX_IMAGE_BASE64_BYTES:
+        try:
+            raw = path.read_bytes()
+        except Exception as exc:
+            logger.warning("image_routing: failed to read %s — %s", path, exc)
+            return None
+        mime = _guess_mime(path)
+        b64 = base64.b64encode(raw).decode("ascii")
+        return f"data:{mime};base64,{b64}"
+
+    # Oversized — delegate to vision_tools' battle-tested resizer.
+    logger.info(
+        "image_routing: %s is %.1f MB, auto-resizing for native attachment",
+        path.name, file_size / (1024 * 1024),
+    )
+    try:
+        from tools.vision_tools import _resize_image_for_vision
+        resized = _resize_image_for_vision(
+            path,
+            mime_type=_guess_mime(path),
+            max_base64_bytes=_RESIZE_TARGET_BYTES,
+        )
+        if resized and len(resized) <= _MAX_IMAGE_BASE64_BYTES:
+            return resized
+        logger.warning(
+            "image_routing: resize of %s did not fit under %.1f MB — "
+            "dropping from native content parts",
+            path.name, _MAX_IMAGE_BASE64_BYTES / (1024 * 1024),
+        )
+        return None
+    except Exception as exc:
+        logger.warning(
+            "image_routing: auto-resize of %s failed (%s) — dropping", path.name, exc
+        )
+        return None
 
 
 def build_native_content_parts(

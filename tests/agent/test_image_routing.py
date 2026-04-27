@@ -171,3 +171,111 @@ class TestBuildNativeContentParts:
         parts, _ = build_native_content_parts("", [str(img)])
         url = parts[1]["image_url"]["url"]
         assert url.startswith("data:image/webp;base64,")
+
+
+# ─── Oversize handling ───────────────────────────────────────────────────────
+
+
+class TestOversizeHandling:
+    """Large images should auto-resize or be skipped, never blindly attached."""
+
+    def test_oversize_file_triggers_resize_path(self, tmp_path: Path, monkeypatch):
+        """When file exceeds 20MB ceiling, the resize helper is called."""
+        from agent import image_routing as _ir
+
+        img = tmp_path / "huge.png"
+        img.write_bytes(_png_bytes())
+
+        # Fake a file that looks huge without actually allocating 30MB.
+        fake_stat = img.stat()
+        class _FakeStat:
+            st_size = 30 * 1024 * 1024  # 30 MB
+            st_mode = fake_stat.st_mode
+            st_uid = fake_stat.st_uid
+            st_gid = fake_stat.st_gid
+            st_mtime = fake_stat.st_mtime
+            st_ctime = fake_stat.st_ctime
+            st_atime = fake_stat.st_atime
+            st_nlink = fake_stat.st_nlink
+            st_ino = fake_stat.st_ino
+            st_dev = fake_stat.st_dev
+        monkeypatch.setattr(Path, "stat", lambda self: _FakeStat())
+
+        resize_called = {"count": 0}
+
+        def _fake_resize(path, mime_type=None, max_base64_bytes=None):
+            resize_called["count"] += 1
+            return "data:image/jpeg;base64,ZmFrZXJlc2l6ZWQ="
+
+        monkeypatch.setattr(
+            "tools.vision_tools._resize_image_for_vision",
+            _fake_resize,
+            raising=False,
+        )
+
+        url = _ir._file_to_data_url(img)
+        assert resize_called["count"] == 1
+        assert url == "data:image/jpeg;base64,ZmFrZXJlc2l6ZWQ="
+
+    def test_oversize_when_resize_fails_returns_none(self, tmp_path: Path, monkeypatch):
+        """If Pillow isn't available or resize throws, return None so caller skips."""
+        from agent import image_routing as _ir
+
+        img = tmp_path / "huge.png"
+        img.write_bytes(_png_bytes())
+
+        fake_stat = img.stat()
+        class _FakeStat:
+            st_size = 30 * 1024 * 1024
+            st_mode = fake_stat.st_mode
+            st_uid = fake_stat.st_uid
+            st_gid = fake_stat.st_gid
+            st_mtime = fake_stat.st_mtime
+            st_ctime = fake_stat.st_ctime
+            st_atime = fake_stat.st_atime
+            st_nlink = fake_stat.st_nlink
+            st_ino = fake_stat.st_ino
+            st_dev = fake_stat.st_dev
+        monkeypatch.setattr(Path, "stat", lambda self: _FakeStat())
+
+        def _boom(*a, **kw):
+            raise RuntimeError("no Pillow")
+
+        monkeypatch.setattr(
+            "tools.vision_tools._resize_image_for_vision",
+            _boom,
+            raising=False,
+        )
+
+        assert _ir._file_to_data_url(img) is None
+
+    def test_oversize_skipped_image_reported_as_skipped(self, tmp_path: Path, monkeypatch):
+        """build_native_content_parts reports oversized unrecoverable images in skipped."""
+        from agent import image_routing as _ir
+
+        img = tmp_path / "huge.png"
+        img.write_bytes(_png_bytes())
+
+        fake_stat = img.stat()
+        class _FakeStat:
+            st_size = 30 * 1024 * 1024
+            st_mode = fake_stat.st_mode
+            st_uid = fake_stat.st_uid
+            st_gid = fake_stat.st_gid
+            st_mtime = fake_stat.st_mtime
+            st_ctime = fake_stat.st_ctime
+            st_atime = fake_stat.st_atime
+            st_nlink = fake_stat.st_nlink
+            st_ino = fake_stat.st_ino
+            st_dev = fake_stat.st_dev
+        monkeypatch.setattr(Path, "stat", lambda self: _FakeStat())
+        monkeypatch.setattr(
+            "tools.vision_tools._resize_image_for_vision",
+            lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("nope")),
+            raising=False,
+        )
+
+        parts, skipped = _ir.build_native_content_parts("hi", [str(img)])
+        assert skipped == [str(img)]
+        # text part preserved, no image part
+        assert parts == [{"type": "text", "text": "hi"}]
