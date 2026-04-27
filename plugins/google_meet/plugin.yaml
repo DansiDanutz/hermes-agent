@@ -1,0 +1,16 @@
+name: google_meet
+version: 0.1.0
+description: "Let the agent join a Google Meet call, scrape live captions into a transcript, and follow up afterwards. v1 is transcribe-only (Playwright + DOM caption scraping); a future v2 will add realtime duplex audio via OpenAI Realtime / Gemini Live + BlackHole / PulseAudio null-sink. Explicit-by-design: only joins meet.google.com URLs the user or agent explicitly passes in — never scans calendars, never auto-dials."
+author: NousResearch
+kind: standalone
+platforms:
+  - linux
+  - macos
+provides_tools:
+  - meet_join
+  - meet_leave
+  - meet_status
+  - meet_transcript
+  - meet_say
+hooks:
+  - on_session_end
