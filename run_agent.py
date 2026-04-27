@@ -7283,6 +7283,26 @@ class AIAgent:
         self._anthropic_image_fallback_cache[cache_key] = note
         return note
 
+    def _model_supports_vision(self) -> bool:
+        """Return True if the active provider+model reports native vision.
+
+        Used to decide whether to strip image content parts from API-bound
+        messages (for non-vision models) or let the provider adapter handle
+        them natively (for vision-capable models).
+        """
+        try:
+            from agent.models_dev import get_model_capabilities
+            provider = (getattr(self, "provider", "") or "").strip()
+            model = (getattr(self, "model", "") or "").strip()
+            if not provider or not model:
+                return False
+            caps = get_model_capabilities(provider, model)
+            if caps is None:
+                return False
+            return bool(caps.supports_vision)
+        except Exception:
+            return False
+
     def _preprocess_anthropic_content(self, content: Any, role: str) -> Any:
         if not self._content_has_image_parts(content):
             return content
@@ -7346,16 +7366,59 @@ class AIAgent:
         return t
 
     def _prepare_anthropic_messages_for_api(self, api_messages: list) -> list:
+        # Fast exit when no message carries image content at all.
         if not any(
             isinstance(msg, dict) and self._content_has_image_parts(msg.get("content"))
             for msg in api_messages
         ):
             return api_messages
 
+        # The Anthropic adapter (agent/anthropic_adapter.py:_convert_content_part_to_anthropic)
+        # already translates OpenAI-style image_url/input_image parts into
+        # native Anthropic ``{"type": "image", "source": ...}`` blocks. When
+        # the active model supports vision we let the adapter do its job and
+        # skip this legacy text-fallback preprocessor entirely.
+        if self._model_supports_vision():
+            return api_messages
+
+        # Non-vision Anthropic model (rare today, but keep the fallback for
+        # compat): replace each image part with a vision_analyze text note.
         transformed = copy.deepcopy(api_messages)
         for msg in transformed:
             if not isinstance(msg, dict):
                 continue
+            msg["content"] = self._preprocess_anthropic_content(
+                msg.get("content"),
+                str(msg.get("role", "user") or "user"),
+            )
+        return transformed
+
+    def _prepare_messages_for_non_vision_model(self, api_messages: list) -> list:
+        """Strip native image parts when the active model lacks vision.
+
+        Runs on the chat.completions / codex_responses paths. Vision-capable
+        models pass through unchanged (provider and any downstream translator
+        handle the image parts natively). Non-vision models get each image
+        replaced by a cached vision_analyze text description so the turn
+        doesn't fail with "model does not support image input".
+        """
+        if not any(
+            isinstance(msg, dict) and self._content_has_image_parts(msg.get("content"))
+            for msg in api_messages
+        ):
+            return api_messages
+
+        if self._model_supports_vision():
+            return api_messages
+
+        transformed = copy.deepcopy(api_messages)
+        for msg in transformed:
+            if not isinstance(msg, dict):
+                continue
+            # Reuse the Anthropic text-fallback preprocessor — the behaviour is
+            # identical (walk content parts, replace images with cached
+            # descriptions, merge back into a single text or structured
+            # content). Naming is historical.
             msg["content"] = self._preprocess_anthropic_content(
                 msg.get("content"),
                 str(msg.get("role", "user") or "user"),
@@ -7510,9 +7573,10 @@ class AIAgent:
                 )
             )
             is_xai_responses = self.provider == "xai" or self._base_url_hostname == "api.x.ai"
+            _msgs_for_codex = self._prepare_messages_for_non_vision_model(api_messages)
             return _ct.build_kwargs(
                 model=self.model,
-                messages=api_messages,
+                messages=_msgs_for_codex,
                 tools=self.tools,
                 reasoning_config=self.reasoning_config,
                 session_id=getattr(self, "session_id", None),
@@ -7591,9 +7655,12 @@ class AIAgent:
         if _ephemeral_out is not None:
             self._ephemeral_max_output_tokens = None
 
+        # Strip image parts for non-vision models (no-op when vision-capable).
+        _msgs_for_chat = self._prepare_messages_for_non_vision_model(api_messages)
+
         return _ct.build_kwargs(
             model=self.model,
-            messages=api_messages,
+            messages=_msgs_for_chat,
             tools=self.tools,
             timeout=self._resolved_api_call_timeout(),
             max_tokens=self.max_tokens,
