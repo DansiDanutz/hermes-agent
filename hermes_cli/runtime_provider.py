@@ -214,10 +214,6 @@ def _resolve_runtime_from_pool_entry(
         base_url = cfg_base_url or base_url or "https://api.anthropic.com"
     elif provider == "openrouter":
         base_url = base_url or OPENROUTER_BASE_URL
-    elif provider == "xai":
-        api_mode = "codex_responses"
-    elif provider == "nous":
-        api_mode = "chat_completions"
     elif provider == "copilot":
         api_mode = _copilot_runtime_api_mode(model_cfg, getattr(entry, "runtime_api_key", ""))
         base_url = base_url or PROVIDER_REGISTRY["copilot"].inference_base_url
@@ -236,6 +232,14 @@ def _resolve_runtime_from_pool_entry(
             base_url = re.sub(r"/v1/?$", "", base_url)
     else:
         configured_provider = str(model_cfg.get("provider") or "").strip().lower()
+        # Use profile api_mode for all other known providers
+        try:
+            from providers import get_provider_profile
+            _p = get_provider_profile(provider)
+            if _p and _p.api_mode:
+                api_mode = _p.api_mode
+        except Exception:
+            pass
         # Honour model.base_url from config.yaml when the configured provider
         # matches this provider — same pattern as the Anthropic branch above.
         # Only override when the pool entry has no explicit base_url (i.e. it
@@ -253,12 +257,21 @@ def _resolve_runtime_from_pool_entry(
             from hermes_cli.models import opencode_model_api_mode
             api_mode = opencode_model_api_mode(provider, effective_model)
         else:
-            # Auto-detect Anthropic-compatible endpoints (/anthropic suffix,
-            # Kimi /coding, api.openai.com → codex_responses, api.x.ai →
-            # codex_responses).
-            detected = _detect_api_mode_for_url(base_url)
-            if detected:
-                api_mode = detected
+            # Try profile api_mode first, then auto-detect from URL
+            try:
+                from providers import get_provider_profile
+                _p = get_provider_profile(provider)
+                if _p and _p.api_mode:
+                    api_mode = _p.api_mode
+            except Exception:
+                pass
+            if api_mode == "chat_completions":
+                # Auto-detect Anthropic-compatible endpoints (/anthropic suffix,
+                # Kimi /coding, api.openai.com → codex_responses, api.x.ai →
+                # codex_responses).
+                detected = _detect_api_mode_for_url(base_url)
+                if detected:
+                    api_mode = detected
 
     # OpenCode base URLs end with /v1 for OpenAI-compatible models, but the
     # Anthropic SDK prepends its own /v1/messages to the base_url.  Strip the

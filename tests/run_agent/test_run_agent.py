@@ -1097,6 +1097,7 @@ class TestBuildApiKwargs:
         assert "temperature" not in kwargs
 
     def test_kimi_coding_endpoint_omits_temperature(self, agent):
+        agent.provider = "kimi-coding"
         agent.base_url = "https://api.kimi.com/coding/v1"
         agent._base_url_lower = agent.base_url.lower()
         agent.model = "kimi-k2.5"
@@ -1109,6 +1110,7 @@ class TestBuildApiKwargs:
     def test_kimi_coding_endpoint_sends_max_tokens_and_reasoning(self, agent):
         """Kimi endpoint should send max_tokens=32000 and reasoning_effort as
         top-level params, matching Kimi CLI's default behavior."""
+        agent.provider = "kimi-coding"
         agent.base_url = "https://api.kimi.com/coding/v1"
         agent._base_url_lower = agent.base_url.lower()
         agent.model = "kimi-for-coding"
@@ -1121,6 +1123,7 @@ class TestBuildApiKwargs:
 
     def test_kimi_coding_endpoint_respects_custom_effort(self, agent):
         """reasoning_effort should reflect reasoning_config.effort when set."""
+        agent.provider = "kimi-coding"
         agent.base_url = "https://api.kimi.com/coding/v1"
         agent._base_url_lower = agent.base_url.lower()
         agent.model = "kimi-for-coding"
@@ -1134,6 +1137,7 @@ class TestBuildApiKwargs:
     def test_kimi_coding_endpoint_sends_thinking_extra_body(self, agent):
         """Kimi endpoint should send extra_body.thinking={"type":"enabled"}
         to activate reasoning mode, mirroring Kimi CLI's with_thinking()."""
+        agent.provider = "kimi-coding"
         agent.base_url = "https://api.kimi.com/coding/v1"
         agent._base_url_lower = agent.base_url.lower()
         agent.model = "kimi-for-coding"
@@ -1147,6 +1151,7 @@ class TestBuildApiKwargs:
         """When reasoning_config.enabled=False, thinking should be disabled
         and reasoning_effort should be omitted entirely — mirroring Kimi
         CLI's with_thinking("off") which maps to reasoning_effort=None."""
+        agent.provider = "kimi-coding"
         agent.base_url = "https://api.kimi.com/coding/v1"
         agent._base_url_lower = agent.base_url.lower()
         agent.model = "kimi-for-coding"
@@ -1160,6 +1165,7 @@ class TestBuildApiKwargs:
 
     def test_moonshot_endpoint_sends_max_tokens_and_reasoning(self, agent):
         """api.moonshot.ai should get the same Kimi-compatible params."""
+        agent.provider = "kimi-coding"
         agent.base_url = "https://api.moonshot.ai/v1"
         agent._base_url_lower = agent.base_url.lower()
         agent.model = "kimi-k2.5"
@@ -1173,6 +1179,7 @@ class TestBuildApiKwargs:
 
     def test_moonshot_cn_endpoint_sends_max_tokens_and_reasoning(self, agent):
         """api.moonshot.cn (China endpoint) should get the same params."""
+        agent.provider = "kimi-coding-cn"
         agent.base_url = "https://api.moonshot.cn/v1"
         agent._base_url_lower = agent.base_url.lower()
         agent.model = "kimi-k2.5"
@@ -1185,6 +1192,7 @@ class TestBuildApiKwargs:
         assert kwargs["extra_body"]["thinking"] == {"type": "enabled"}
 
     def test_provider_preferences_injected(self, agent):
+        agent.provider = "openrouter"
         agent.base_url = "https://openrouter.ai/api/v1"
         agent.providers_allowed = ["Anthropic"]
         messages = [{"role": "user", "content": "hi"}]
@@ -1193,6 +1201,7 @@ class TestBuildApiKwargs:
 
     def test_reasoning_config_default_openrouter(self, agent):
         """Default reasoning config for OpenRouter should be medium."""
+        agent.provider = "openrouter"
         agent.base_url = "https://openrouter.ai/api/v1"
         agent.model = "anthropic/claude-sonnet-4-20250514"
         messages = [{"role": "user", "content": "hi"}]
@@ -1202,6 +1211,7 @@ class TestBuildApiKwargs:
         assert reasoning["effort"] == "medium"
 
     def test_reasoning_config_custom(self, agent):
+        agent.provider = "openrouter"
         agent.base_url = "https://openrouter.ai/api/v1"
         agent.model = "anthropic/claude-sonnet-4-20250514"
         agent.reasoning_config = {"enabled": False}
@@ -1217,6 +1227,7 @@ class TestBuildApiKwargs:
         assert "reasoning" not in kwargs.get("extra_body", {})
 
     def test_reasoning_sent_for_supported_openrouter_model(self, agent):
+        agent.provider = "openrouter"
         agent.base_url = "https://openrouter.ai/api/v1"
         agent.model = "qwen/qwen3.5-plus-02-15"
         messages = [{"role": "user", "content": "hi"}]
@@ -1224,6 +1235,7 @@ class TestBuildApiKwargs:
         assert kwargs["extra_body"]["reasoning"]["effort"] == "medium"
 
     def test_reasoning_sent_for_nous_route(self, agent):
+        agent.provider = "nous"
         agent.base_url = "https://inference-api.nousresearch.com/v1"
         agent.model = "minimax/minimax-m2.5"
         messages = [{"role": "user", "content": "hi"}]
@@ -1231,18 +1243,38 @@ class TestBuildApiKwargs:
         assert kwargs["extra_body"]["reasoning"]["effort"] == "medium"
 
     def test_reasoning_sent_for_copilot_gpt5(self, agent):
-        agent.base_url = "https://api.githubcopilot.com"
-        agent.model = "gpt-5.4"
-        messages = [{"role": "user", "content": "hi"}]
-        kwargs = agent._build_api_kwargs(messages)
+        """Copilot/GitHub Models: GPT-5 reasoning goes in extra_body.reasoning."""
+        from agent.transports import get_transport
+        from providers import get_provider_profile
+
+        transport = get_transport("chat_completions")
+        profile = get_provider_profile("copilot")
+        msgs = [{"role": "user", "content": "hi"}]
+        kwargs = transport.build_kwargs(
+            model="gpt-5.4",
+            messages=msgs,
+            tools=None,
+            supports_reasoning=True,
+            provider_profile=profile,
+        )
         assert kwargs["extra_body"]["reasoning"] == {"effort": "medium"}
 
     def test_reasoning_xhigh_normalized_for_copilot(self, agent):
-        agent.base_url = "https://api.githubcopilot.com"
-        agent.model = "gpt-5.4"
-        agent.reasoning_config = {"enabled": True, "effort": "xhigh"}
-        messages = [{"role": "user", "content": "hi"}]
-        kwargs = agent._build_api_kwargs(messages)
+        """xhigh effort should normalize to high for Copilot GitHub Models."""
+        from agent.transports import get_transport
+        from providers import get_provider_profile
+
+        transport = get_transport("chat_completions")
+        profile = get_provider_profile("copilot")
+        msgs = [{"role": "user", "content": "hi"}]
+        kwargs = transport.build_kwargs(
+            model="gpt-5.4",
+            messages=msgs,
+            tools=None,
+            supports_reasoning=True,
+            reasoning_config={"enabled": True, "effort": "xhigh"},
+            provider_profile=profile,
+        )
         assert kwargs["extra_body"]["reasoning"] == {"effort": "high"}
 
     def test_reasoning_omitted_for_non_reasoning_copilot_model(self, agent):
@@ -1260,6 +1292,7 @@ class TestBuildApiKwargs:
 
 
     def test_qwen_portal_formats_messages_and_metadata(self, agent):
+        agent.provider = "qwen-oauth"
         agent.base_url = "https://portal.qwen.ai/v1"
         agent._base_url_lower = agent.base_url.lower()
         agent.session_id = "sess-123"
@@ -1276,6 +1309,7 @@ class TestBuildApiKwargs:
         assert kwargs["messages"][2]["content"][0]["text"] == "hi"
 
     def test_qwen_portal_normalizes_bare_string_content_parts(self, agent):
+        agent.provider = "qwen-oauth"
         agent.base_url = "https://portal.qwen.ai/v1"
         agent._base_url_lower = agent.base_url.lower()
         messages = [
@@ -1288,6 +1322,7 @@ class TestBuildApiKwargs:
         assert user_content[1] == {"type": "text", "text": "world"}
 
     def test_qwen_portal_no_system_message(self, agent):
+        agent.provider = "qwen-oauth"
         agent.base_url = "https://portal.qwen.ai/v1"
         agent._base_url_lower = agent.base_url.lower()
         messages = [{"role": "user", "content": "hi"}]
@@ -1308,6 +1343,7 @@ class TestBuildApiKwargs:
     def test_qwen_portal_default_max_tokens(self, agent):
         """When max_tokens is None, Qwen Portal gets a default of 65536
         to prevent reasoning models from exhausting their output budget."""
+        agent.provider = "qwen-oauth"
         agent.base_url = "https://portal.qwen.ai/v1"
         agent._base_url_lower = agent.base_url.lower()
         agent.max_tokens = None
@@ -3825,7 +3861,7 @@ def test_aiagent_uses_copilot_acp_client():
         patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
         patch("run_agent.check_toolset_requirements", return_value={}),
         patch("run_agent.OpenAI") as mock_openai,
-        patch("agent.copilot_acp_client.CopilotACPClient") as mock_acp_client,
+        patch("acp_adapter.copilot_client.CopilotACPClient") as mock_acp_client,
     ):
         acp_client = MagicMock()
         mock_acp_client.return_value = acp_client
