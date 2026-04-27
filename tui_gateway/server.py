@@ -2307,7 +2307,11 @@ def _(rid, params: dict) -> dict:
 
                 if _mode == "native":
                     try:
-                        _parts, _skipped = build_native_content_parts(prompt, images)
+                        _parts, _skipped = build_native_content_parts(
+                            prompt,
+                            images,
+                            provider=_read_main_provider(),
+                        )
                         if _skipped:
                             print(
                                 f"[tui_gateway] native image attachment skipped {len(_skipped)} unreadable path(s)",

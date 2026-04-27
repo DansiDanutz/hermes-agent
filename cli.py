@@ -8390,7 +8390,11 @@ class HermesCLI:
                 try:
                     _text_for_parts = message if isinstance(message, str) else ""
                     _img_str_paths = [str(p) for p in images]
-                    _parts, _skipped = build_native_content_parts(_text_for_parts, _img_str_paths)
+                    _parts, _skipped = build_native_content_parts(
+                        _text_for_parts,
+                        _img_str_paths,
+                        provider=(self.provider or "").strip(),
+                    )
                     if _skipped:
                         _cprint(
                             f"  {_DIM}⚠ skipped {len(_skipped)} unreadable image path(s){_RST}"

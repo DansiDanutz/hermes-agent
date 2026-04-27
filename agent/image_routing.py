@@ -129,15 +129,41 @@ def decide_image_input_mode(
     return "text"
 
 
-# Hard ceiling for a single native image payload.  Matches vision_tools.py
-# _MAX_BASE64_BYTES — the most restrictive major provider (Gemini inline
-# data limit).  Oversized images are auto-resized via Pillow when available;
-# if resize fails or overshoots, the image is skipped and the caller falls
-# back to the text pipeline for that image.
-_MAX_IMAGE_BASE64_BYTES = 20 * 1024 * 1024  # 20 MB
-# Auto-resize target on first-try oversize.  5 MB aligns with Anthropic's
-# per-image recommendation and comfortably fits all provider inline limits.
-_RESIZE_TARGET_BYTES = 5 * 1024 * 1024
+# Empirically-verified per-provider base64 ceilings.  Measured April 2026
+# by sending progressively-larger PNGs through each provider's native vision
+# path and observing where rejections begin:
+#
+#   anthropic                    → hard 5 MB (documented + HTTP 400 above)
+#   openai (codex_responses)     → accepts 49 MB+ (no observed ceiling)
+#   openrouter → openai/*        → accepts 49 MB+ (no observed ceiling)
+#   gemini (google-genai)        → documented 100 MB inline; untested here
+#   bedrock (anthropic models)   → inherits Anthropic's 5 MB
+#
+# When the active provider isn't in this table we do NOT impose a ceiling —
+# the provider's own 400/413 is clearer than us guessing wrong.  The
+# consequence of hitting a surprise ceiling is one failed turn with a
+# provider-specific error message, which is recoverable; the consequence
+# of us capping too aggressively is silent, permanent quality loss on
+# creative workflows.
+_PROVIDER_BASE64_CEILING: Dict[str, int] = {
+    "anthropic": 5 * 1024 * 1024,
+    "bedrock": 5 * 1024 * 1024,  # same adapter, same image source shape
+}
+
+# Target size when we do auto-resize.  Chosen to slide under Anthropic's
+# 5 MB ceiling with room for headers; other providers see this as a
+# no-op because their effective ceilings are much higher.
+_RESIZE_TARGET_BYTES = 4 * 1024 * 1024
+
+
+def _ceiling_for_provider(provider: str) -> Optional[int]:
+    """Return the empirically-verified base64 ceiling for a provider, or None.
+
+    None means "no known ceiling — let the provider police its own limit".
+    """
+    if not provider:
+        return None
+    return _PROVIDER_BASE64_CEILING.get(provider.strip().lower())
 
 
 def _guess_mime(path: Path) -> str:
@@ -157,14 +183,18 @@ def _guess_mime(path: Path) -> str:
     }.get(suffix, "image/jpeg")
 
 
-def _file_to_data_url(path: Path) -> Optional[str]:
-    """Encode a local image as a base64 data URL, auto-resizing if oversized.
+def _file_to_data_url(path: Path, ceiling: Optional[int] = None) -> Optional[str]:
+    """Encode a local image as a base64 data URL.
 
-    Large images are downscaled via Pillow on a best-effort basis so that a
-    screenshot dragged in from a 5K monitor doesn't blow context or 413 the
-    provider. When Pillow isn't available and the raw file exceeds
-    ``_MAX_IMAGE_BASE64_BYTES``, returns None — the caller drops this image
-    from the native content parts (it gets reported back as ``skipped``).
+    When ``ceiling`` is None (provider has no known limit), the file is
+    encoded as-is — we trust the provider to return its own error if it
+    disagrees.
+
+    When ``ceiling`` is set (e.g. Anthropic's 5 MB), oversized images are
+    auto-resized via Pillow to ``_RESIZE_TARGET_BYTES`` before encoding.
+    If Pillow is missing or the resized output still overshoots, returns
+    None so the caller can report the path in ``skipped`` and let the
+    text-enrichment fallback handle it.
     """
     try:
         file_size = path.stat().st_size
@@ -172,9 +202,10 @@ def _file_to_data_url(path: Path) -> Optional[str]:
         logger.warning("image_routing: failed to stat %s — %s", path, exc)
         return None
 
-    # Base64 expands by ~4/3.  Fast-path small images.
+    # Base64 expands by ~4/3.  If we have no ceiling, or the image
+    # comfortably fits, encode directly.
     estimated_b64 = (file_size * 4) // 3 + 100
-    if estimated_b64 <= _MAX_IMAGE_BASE64_BYTES:
+    if ceiling is None or estimated_b64 <= ceiling:
         try:
             raw = path.read_bytes()
         except Exception as exc:
@@ -184,29 +215,34 @@ def _file_to_data_url(path: Path) -> Optional[str]:
         b64 = base64.b64encode(raw).decode("ascii")
         return f"data:{mime};base64,{b64}"
 
-    # Oversized — delegate to vision_tools' battle-tested resizer.
+    # Oversized for this specific provider — try to resize down.
     logger.info(
-        "image_routing: %s is %.1f MB, auto-resizing for native attachment",
-        path.name, file_size / (1024 * 1024),
+        "image_routing: %s is %.1f MB (provider ceiling %.1f MB), auto-resizing",
+        path.name,
+        file_size / (1024 * 1024),
+        ceiling / (1024 * 1024),
     )
     try:
         from tools.vision_tools import _resize_image_for_vision
         resized = _resize_image_for_vision(
             path,
             mime_type=_guess_mime(path),
-            max_base64_bytes=_RESIZE_TARGET_BYTES,
+            max_base64_bytes=min(_RESIZE_TARGET_BYTES, ceiling),
         )
-        if resized and len(resized) <= _MAX_IMAGE_BASE64_BYTES:
+        if resized and len(resized) <= ceiling:
             return resized
         logger.warning(
             "image_routing: resize of %s did not fit under %.1f MB — "
-            "dropping from native content parts",
-            path.name, _MAX_IMAGE_BASE64_BYTES / (1024 * 1024),
+            "dropping from native content parts (provider would reject)",
+            path.name,
+            ceiling / (1024 * 1024),
         )
         return None
     except Exception as exc:
         logger.warning(
-            "image_routing: auto-resize of %s failed (%s) — dropping", path.name, exc
+            "image_routing: auto-resize of %s failed (%s) — dropping",
+            path.name,
+            exc,
         )
         return None
 
@@ -214,6 +250,8 @@ def _file_to_data_url(path: Path) -> Optional[str]:
 def build_native_content_parts(
     user_text: str,
     image_paths: List[str],
+    *,
+    provider: Optional[str] = None,
 ) -> Tuple[List[Dict[str, Any]], List[str]]:
     """Build an OpenAI-style ``content`` list for a user turn.
 
@@ -222,12 +260,20 @@ def build_native_content_parts(
        {"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}},
        ...]
 
-    Returns (content_parts, skipped_paths). Skipped paths are files that could
-    not be read (missing, permission denied, etc.); the caller can decide to
-    surface a warning or fall back to text enrichment for those.
+    When ``provider`` is supplied and has a known ceiling (see
+    ``_PROVIDER_BASE64_CEILING``), oversized images are auto-resized or
+    dropped.  When provider is None or unknown, images are attached at
+    their native size and the provider returns its own error if it
+    disagrees — clearer and more future-proof than us guessing wrong.
+
+    Returns (content_parts, skipped_paths). Skipped paths are files that
+    couldn't be read, or that exceed the provider's ceiling even after
+    resize. The caller can surface a warning or fall back to text
+    enrichment for those.
     """
     parts: List[Dict[str, Any]] = []
     skipped: List[str] = []
+    ceiling = _ceiling_for_provider(provider or "")
 
     text = (user_text or "").strip()
     if text:
@@ -238,7 +284,7 @@ def build_native_content_parts(
         if not p.exists() or not p.is_file():
             skipped.append(str(raw_path))
             continue
-        data_url = _file_to_data_url(p)
+        data_url = _file_to_data_url(p, ceiling=ceiling)
         if not data_url:
             skipped.append(str(raw_path))
             continue
