@@ -66,8 +66,8 @@ Without v2: the "realtime" path is skipped; transcribe runs alone.
 ## Local quick start
 
 ```bash
-pip install playwright && python -m playwright install chromium
 hermes plugins enable google_meet
+hermes meet install                                      # pip + Chromium
 hermes meet setup                                        # preflight
 hermes meet auth                                         # optional
 hermes meet join https://meet.google.com/abc-defg-hij    # transcribe
@@ -75,9 +75,9 @@ hermes meet join https://meet.google.com/abc-defg-hij    # transcribe
 
 ## Realtime mode
 
-Linux (preferred):
+Linux (preferred, most automated):
 ```bash
-sudo apt install pulseaudio-utils                  # paplay + pactl
+hermes meet install --realtime                     # installs pulseaudio-utils
 echo 'OPENAI_API_KEY=sk-...' >> ~/.hermes/.env
 hermes meet join https://meet.google.com/abc-defg-hij --mode realtime
 # then from the agent or CLI:
@@ -86,8 +86,8 @@ hermes meet say "Good morning everyone, I'm the note-taker bot."
 
 macOS:
 ```bash
-brew install blackhole-2ch
-# Open System Settings → Sound → Input → select BlackHole 2ch
+hermes meet install --realtime     # runs: brew install blackhole-2ch ffmpeg
+# then — manually! — open System Settings → Sound → Input → BlackHole 2ch
 echo 'OPENAI_API_KEY=sk-...' >> ~/.hermes/.env
 hermes meet join https://meet.google.com/abc-defg-hij --mode realtime
 ```

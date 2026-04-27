@@ -40,16 +40,29 @@ Pick `realtime` only when the user actually wants the agent to speak. It costs r
 
 ## Prerequisites the user must handle once
 
-For local use:
+Easiest path — run the built-in installer:
+
 ```bash
-pip install playwright && python -m playwright install chromium
 hermes plugins enable google_meet
-hermes meet auth        # optional; skips guest-lobby wait
+hermes meet install                 # pip deps + Chromium (transcribe only)
+hermes meet install --realtime      # + pulseaudio-utils / brew blackhole+ffmpeg
+hermes meet auth                    # optional; skips guest-lobby wait
+hermes meet setup                   # preflight checks
+```
+
+`hermes meet install --realtime` prompts before running `sudo apt-get` (Linux)
+or `brew install` (macOS). Pass `--yes` to skip the prompt. It will NOT touch
+your macOS default-input setting — you have to select BlackHole 2ch in
+System Settings yourself before starting a realtime meeting.
+
+Or do it manually:
+```bash
+pip install playwright websockets && python -m playwright install chromium
 
 # For realtime mode, additionally:
-#   Linux:  sudo apt install pulseaudio-utils   (provides paplay + pactl)
-#   macOS:  brew install blackhole-2ch && set it as default input in Sound prefs
-#           (the bot does not switch your system audio — you do)
+#   Linux:  sudo apt install pulseaudio-utils
+#   macOS:  brew install blackhole-2ch ffmpeg
+#           → System Settings → Sound → Input → BlackHole 2ch
 #   Then set OPENAI_API_KEY or HERMES_MEET_REALTIME_KEY in ~/.hermes/.env
 ```
 
@@ -93,10 +106,30 @@ Run `hermes meet setup` to preflight local prereqs.
 
 - Captions are only as good as Google Meet's live captions. English-biased, lossy on overlapping speakers.
 - Guest mode sits in the lobby until a host admits. Warn the user; `hermes meet auth` avoids this.
+- **Lobby timeout**: if the host doesn't admit the bot within 5 minutes (configurable via `HERMES_MEET_LOBBY_TIMEOUT` env), the bot leaves and `meet_status` reports `leaveReason: "lobby_timeout"`.
 - **One active meeting per install per location.** A second `meet_join` leaves the first.
 - **Windows not supported.**
 - Realtime mode needs a virtual audio device. If the audio bridge setup fails, the bot falls back to transcribe mode and flags it in `meet_status().error`.
 - `meet_say` requires `mode='realtime'` on the originating `meet_join`. Calling it against a transcribe-mode meeting returns a clear error.
+- **Barge-in is best-effort.** When a caption arrives attributed to a real participant while the bot is generating audio, the bot sends `response.cancel` to OpenAI Realtime. Captions take ~500ms to show up, so the bot will talk over the first second or so of a human interruption.
+
+## Status dict reference
+
+`meet_status()` returns (subset shown, there are more):
+
+| Key | Meaning |
+|---|---|
+| `inCall` | Past the lobby. False while waiting for admission. |
+| `lobbyWaiting` | Clicked "Ask to join", waiting on host. |
+| `joinAttemptedAt` / `joinedAt` | Timestamps for lobby-click and actual admission. |
+| `captioning` | Caption observer is installed. |
+| `transcriptLines` / `lastCaptionAt` | Transcript progress. |
+| `realtime` / `realtimeReady` | Realtime mode provisioned / WS connected. |
+| `realtimeDevice` | Audio device name the bot is feeding (e.g. `hermes_meet_src`). |
+| `audioBytesOut` / `lastAudioOutAt` | How much PCM the OpenAI session has produced. |
+| `lastBargeInAt` | Timestamp of the most recent `response.cancel` sent. |
+| `leaveReason` | `duration_expired`, `lobby_timeout`, `denied`, `page_closed`, or null. |
+| `error` | Last error (soft — bot may still be running). |
 
 ## Transcript location
 

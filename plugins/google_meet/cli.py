@@ -41,6 +41,19 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
 
     subs.add_parser("setup", help="Preflight: playwright, chromium, auth")
 
+    inst_p = subs.add_parser(
+        "install",
+        help="Install prerequisites (pip deps, Chromium, platform audio tools)",
+    )
+    inst_p.add_argument(
+        "--realtime", action="store_true",
+        help="Also install realtime audio tools (pulseaudio-utils on Linux, BlackHole+ffmpeg on macOS). Uses sudo/brew, prompts before invoking either.",
+    )
+    inst_p.add_argument(
+        "--yes", "-y", action="store_true",
+        help="Answer yes to all prompts (use with care; will run sudo apt-get or brew without asking).",
+    )
+
     subs.add_parser("auth", help="Sign in to Google and save session state")
 
     join_p = subs.add_parser("join", help="Join a Meet URL")
@@ -99,6 +112,11 @@ def meet_command(args: argparse.Namespace) -> int:
         return 2
     if sub == "setup":
         return _cmd_setup()
+    if sub == "install":
+        return _cmd_install(
+            realtime=bool(getattr(args, "realtime", False)),
+            assume_yes=bool(getattr(args, "yes", False)),
+        )
     if sub == "auth":
         return _cmd_auth()
     if sub == "join":
@@ -192,6 +210,128 @@ def _cmd_setup() -> int:
     else:
         print("not ready yet — fix the items above.")
     return 0 if all_ok else 1
+
+
+def _cmd_install(*, realtime: bool, assume_yes: bool) -> int:
+    """Install the plugin's prerequisites.
+
+    Always: pip install playwright + websockets, then
+    ``python -m playwright install chromium``.
+
+    With ``--realtime``: also install the platform audio bridge deps.
+      Linux : ``sudo apt-get install -y pulseaudio-utils``
+      macOS : ``brew install blackhole-2ch ffmpeg``  (+ remind the user
+              to select BlackHole as the default input device manually)
+
+    Prompts before every package-manager invocation unless ``--yes``.
+    Refuses to run on Windows.
+    """
+    import platform as _p
+    import shutil as _shutil
+    import subprocess as _sp
+
+    system = _p.system()
+    if system not in ("Linux", "Darwin"):
+        print(f"google_meet install: {system} is not supported (linux/macos only)")
+        return 1
+
+    def _confirm(prompt: str) -> bool:
+        if assume_yes:
+            return True
+        try:
+            ans = input(f"{prompt} [y/N] ").strip().lower()
+        except EOFError:
+            return False
+        return ans in ("y", "yes")
+
+    print("google_meet install")
+    print("-------------------")
+
+    # 1) pip deps — always safe, venv-scoped.
+    pip_pkgs = ["playwright", "websockets"]
+    print(f"\n[1/3] pip install: {' '.join(pip_pkgs)}")
+    try:
+        res = _sp.run(
+            [sys.executable, "-m", "pip", "install", "--upgrade", *pip_pkgs],
+            check=False,
+        )
+        if res.returncode != 0:
+            print("  pip install failed")
+            return 1
+    except Exception as e:
+        print(f"  pip install failed: {e}")
+        return 1
+
+    # 2) Playwright browsers — pulls chromium (~300MB first run).
+    print("\n[2/3] python -m playwright install chromium")
+    try:
+        res = _sp.run(
+            [sys.executable, "-m", "playwright", "install", "chromium"],
+            check=False,
+        )
+        if res.returncode != 0:
+            print("  playwright install failed (may already be installed)")
+    except Exception as e:
+        print(f"  playwright install failed: {e}")
+        return 1
+
+    # 3) Platform audio deps for realtime mode.
+    if realtime:
+        print("\n[3/3] realtime audio deps")
+        if system == "Linux":
+            if _shutil.which("paplay") and _shutil.which("pactl"):
+                print("  pulseaudio-utils already installed.")
+            else:
+                if not _confirm(
+                    "  install pulseaudio-utils? this runs `sudo apt-get install -y pulseaudio-utils`"
+                ):
+                    print("  skipped (you can run it manually later)")
+                else:
+                    cmd = ["sudo", "apt-get", "install", "-y", "pulseaudio-utils"]
+                    print(f"  $ {' '.join(cmd)}")
+                    res = _sp.run(cmd, check=False)
+                    if res.returncode != 0:
+                        print("  apt install failed — install pulseaudio-utils manually")
+        elif system == "Darwin":
+            have_bh = False
+            try:
+                out = _sp.check_output(["system_profiler", "SPAudioDataType"], text=True)
+                have_bh = "BlackHole" in out
+            except Exception:
+                pass
+            have_ffmpeg = bool(_shutil.which("ffmpeg"))
+            needs = []
+            if not have_bh:
+                needs.append("blackhole-2ch")
+            if not have_ffmpeg:
+                needs.append("ffmpeg")
+            if not needs:
+                print("  BlackHole and ffmpeg already installed.")
+            elif not _shutil.which("brew"):
+                print(
+                    "  missing: " + ", ".join(needs) + "\n"
+                    "  install Homebrew first (https://brew.sh) or install the packages manually."
+                )
+            else:
+                if not _confirm(f"  install via brew: {' '.join(needs)}?"):
+                    print("  skipped (you can run it manually later)")
+                else:
+                    cmd = ["brew", "install", *needs]
+                    print(f"  $ {' '.join(cmd)}")
+                    res = _sp.run(cmd, check=False)
+                    if res.returncode != 0:
+                        print("  brew install failed — install them manually")
+            print(
+                "\n  NOTE: macOS does not auto-route audio. Open\n"
+                "    System Settings → Sound → Input\n"
+                "  and select 'BlackHole 2ch' before starting a realtime meeting.\n"
+                "  hermes will not switch your default input for you."
+            )
+    else:
+        print("\n[3/3] skipped (pass --realtime to install audio tooling too)")
+
+    print("\ndone. verify with: hermes meet setup")
+    return 0
 
 
 def _cmd_auth() -> int:

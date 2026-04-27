@@ -609,3 +609,206 @@ def test_cli_say_subcommand_exists():
     ns = parser.parse_args(["say", "hello team", "--node", "my-mac"])
     assert ns.text == "hello team"
     assert ns.node == "my-mac"
+
+
+# ---------------------------------------------------------------------------
+# v2.1: new _BotState fields + status dict shape
+# ---------------------------------------------------------------------------
+
+def test_bot_state_exposes_v2_telemetry_fields(tmp_path):
+    from plugins.google_meet.meet_bot import _BotState
+
+    state = _BotState(out_dir=tmp_path / "s", meeting_id="x-y-z",
+                      url="https://meet.google.com/x-y-z")
+    # Defaults for the new fields.
+    status = json.loads((tmp_path / "s" / "status.json").read_text())
+    for key in (
+        "realtime", "realtimeReady", "realtimeDevice",
+        "audioBytesOut", "lastAudioOutAt", "lastBargeInAt",
+        "joinAttemptedAt", "leaveReason",
+    ):
+        assert key in status, f"missing v2 telemetry key: {key}"
+    assert status["realtime"] is False
+    assert status["realtimeReady"] is False
+    assert status["audioBytesOut"] == 0
+
+    # Setting them flushes them.
+    state.set(realtime=True, realtime_ready=True, audio_bytes_out=1024,
+              leave_reason="lobby_timeout")
+    status = json.loads((tmp_path / "s" / "status.json").read_text())
+    assert status["realtime"] is True
+    assert status["realtimeReady"] is True
+    assert status["audioBytesOut"] == 1024
+    assert status["leaveReason"] == "lobby_timeout"
+
+
+# ---------------------------------------------------------------------------
+# Admission detection + barge-in helper
+# ---------------------------------------------------------------------------
+
+def test_looks_like_human_speaker():
+    from plugins.google_meet.meet_bot import _looks_like_human_speaker
+
+    # Blank, "unknown", "you", and the bot's own name → not human (no barge-in)
+    for s in ("", "   ", "Unknown", "unknown", "You", "you", "Hermes Agent", "hermes agent"):
+        assert not _looks_like_human_speaker(s, "Hermes Agent"), f"{s!r} should NOT be human"
+    # Real names → human (barge-in)
+    for s in ("Alice", "Bob Lee", "@teknium"):
+        assert _looks_like_human_speaker(s, "Hermes Agent"), f"{s!r} SHOULD be human"
+
+
+def test_detect_admission_returns_false_on_error():
+    from plugins.google_meet.meet_bot import _detect_admission
+
+    class _FakePage:
+        def evaluate(self, _js): raise RuntimeError("boom")
+
+    assert _detect_admission(_FakePage()) is False
+
+
+def test_detect_admission_true_when_probe_returns_true():
+    from plugins.google_meet.meet_bot import _detect_admission
+
+    class _FakePage:
+        def evaluate(self, _js): return True
+
+    assert _detect_admission(_FakePage()) is True
+
+
+def test_detect_denied_returns_false_on_error():
+    from plugins.google_meet.meet_bot import _detect_denied
+
+    class _FakePage:
+        def evaluate(self, _js): raise RuntimeError("boom")
+
+    assert _detect_denied(_FakePage()) is False
+
+
+# ---------------------------------------------------------------------------
+# Realtime session counters + cancel_response (barge-in)
+# ---------------------------------------------------------------------------
+
+def test_realtime_session_cancel_response_when_disconnected():
+    from plugins.google_meet.realtime.openai_client import RealtimeSession
+
+    sess = RealtimeSession(api_key="sk-test", audio_sink_path=None)
+    # No _ws yet — cancel should no-op and return False.
+    assert sess.cancel_response() is False
+
+
+def test_realtime_session_cancel_response_sends_cancel_frame():
+    from plugins.google_meet.realtime.openai_client import RealtimeSession
+
+    sess = RealtimeSession(api_key="sk-test", audio_sink_path=None)
+    sent = []
+
+    class _FakeWs:
+        def send(self, msg): sent.append(msg)
+
+    sess._ws = _FakeWs()
+    assert sess.cancel_response() is True
+    assert len(sent) == 1
+    import json as _j
+    envelope = _j.loads(sent[0])
+    assert envelope == {"type": "response.cancel"}
+
+
+def test_realtime_session_counters_initialized():
+    from plugins.google_meet.realtime.openai_client import RealtimeSession
+
+    sess = RealtimeSession(api_key="sk-test", audio_sink_path=None)
+    assert sess.audio_bytes_out == 0
+    assert sess.last_audio_out_at is None
+
+
+# ---------------------------------------------------------------------------
+# hermes meet install CLI
+# ---------------------------------------------------------------------------
+
+def test_cli_install_subcommand_is_registered():
+    import argparse
+    from plugins.google_meet.cli import register_cli
+
+    parser = argparse.ArgumentParser(prog="hermes meet")
+    register_cli(parser)
+
+    ns = parser.parse_args(["install"])
+    assert ns.meet_command == "install"
+    assert ns.realtime is False
+    assert ns.yes is False
+
+
+def test_cli_install_flags_parse():
+    import argparse
+    from plugins.google_meet.cli import register_cli
+
+    parser = argparse.ArgumentParser(prog="hermes meet")
+    register_cli(parser)
+
+    ns = parser.parse_args(["install", "--realtime", "--yes"])
+    assert ns.realtime is True
+    assert ns.yes is True
+
+
+def test_cmd_install_refuses_windows(capsys):
+    from plugins.google_meet.cli import _cmd_install
+
+    with patch("plugins.google_meet.cli.platform" if False else "platform.system",
+               return_value="Windows"):
+        rc = _cmd_install(realtime=False, assume_yes=True)
+    assert rc == 1
+    out = capsys.readouterr().out
+    assert "Windows" in out
+
+
+def test_cmd_install_runs_pip_and_playwright(capsys):
+    """End-to-end wiring: pip + playwright install invoked, returncodes handled."""
+    from plugins.google_meet.cli import _cmd_install
+    import subprocess as _sp
+
+    calls = []
+    class _FakeRes:
+        def __init__(self, rc=0): self.returncode = rc
+
+    def _fake_run(argv, **kwargs):
+        calls.append(list(argv))
+        return _FakeRes(0)
+
+    with patch("platform.system", return_value="Linux"), \
+         patch("subprocess.run", side_effect=_fake_run), \
+         patch("shutil.which", return_value="/usr/bin/paplay"):
+        rc = _cmd_install(realtime=False, assume_yes=True)
+    assert rc == 0
+    # First invocation: pip install
+    pip_cmds = [c for c in calls if len(c) > 2 and c[1:4] == ["-m", "pip", "install"]]
+    assert pip_cmds, f"no pip install run: {calls}"
+    assert "playwright" in pip_cmds[0]
+    assert "websockets" in pip_cmds[0]
+    # Second: playwright install chromium
+    pw_cmds = [c for c in calls if len(c) > 2 and c[1:4] == ["-m", "playwright", "install"]]
+    assert pw_cmds, f"no playwright install run: {calls}"
+    assert "chromium" in pw_cmds[0]
+
+
+def test_cmd_install_realtime_skips_when_deps_present(capsys):
+    """When paplay + pactl are already on PATH, no sudo call happens."""
+    from plugins.google_meet.cli import _cmd_install
+
+    calls = []
+    class _FakeRes:
+        def __init__(self, rc=0): self.returncode = rc
+
+    def _fake_run(argv, **kwargs):
+        calls.append(list(argv))
+        return _FakeRes(0)
+
+    with patch("platform.system", return_value="Linux"), \
+         patch("subprocess.run", side_effect=_fake_run), \
+         patch("shutil.which", return_value="/usr/bin/paplay"):
+        rc = _cmd_install(realtime=True, assume_yes=True)
+    assert rc == 0
+    # No sudo apt-get call — paplay was already on PATH.
+    sudo_calls = [c for c in calls if c and c[0] == "sudo"]
+    assert sudo_calls == [], f"unexpected sudo invocation: {sudo_calls}"
+    out = capsys.readouterr().out
+    assert "already installed" in out

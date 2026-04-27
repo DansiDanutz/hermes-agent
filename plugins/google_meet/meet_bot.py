@@ -93,11 +93,20 @@ class _BotState:
         self.captioning = False
         self.captions_enabled_attempted = False
         self.lobby_waiting = False
+        self.join_attempted_at: Optional[float] = None
         self.joined_at: Optional[float] = None
         self.last_caption_at: Optional[float] = None
         self.transcript_lines = 0
         self.error: Optional[str] = None
         self.exited = False
+        # v2 realtime fields.
+        self.realtime = False
+        self.realtime_ready = False
+        self.realtime_device: Optional[str] = None
+        self.audio_bytes_out: int = 0
+        self.last_audio_out_at: Optional[float] = None
+        self.last_barge_in_at: Optional[float] = None
+        self.leave_reason: Optional[str] = None
         # Scraped captions, in order, deduped. Each entry is a dict of
         # {"ts": <epoch>, "speaker": str, "text": str}.
         self._seen: set = set()
@@ -137,6 +146,7 @@ class _BotState:
             "captioning": self.captioning,
             "captionsEnabledAttempted": self.captions_enabled_attempted,
             "lobbyWaiting": self.lobby_waiting,
+            "joinAttemptedAt": self.join_attempted_at,
             "joinedAt": self.joined_at,
             "lastCaptionAt": self.last_caption_at,
             "transcriptLines": self.transcript_lines,
@@ -144,6 +154,14 @@ class _BotState:
             "error": self.error,
             "exited": self.exited,
             "pid": os.getpid(),
+            # v2 realtime telemetry.
+            "realtime": self.realtime,
+            "realtimeReady": self.realtime_ready,
+            "realtimeDevice": self.realtime_device,
+            "audioBytesOut": self.audio_bytes_out,
+            "lastAudioOutAt": self.last_audio_out_at,
+            "lastBargeInAt": self.last_barge_in_at,
+            "leaveReason": self.leave_reason,
         }
         tmp = self.status_path.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
@@ -320,10 +338,10 @@ def _start_realtime_speaker(
     t_speaker.start()
     rt["speaker_thread"] = t_speaker
 
-    # PCM pump: on Linux we feed speaker.pcm into the null-sink via
-    # `paplay --raw --device=<sink> --rate=24000 --format=s16le --channels=1`.
-    # paplay will block reading from the file as more PCM is appended.
-    # We run it as a subprocess and track the pid for teardown.
+    # PCM pump: feeds speaker.pcm (24kHz s16le mono) into the OS audio
+    # device that Chrome's fake mic reads from. Different tools per
+    # platform, but the contract is the same — block-read the growing
+    # PCM file and stream it to the device in near-real-time.
     platform_tag = (bridge_info or {}).get("platform")
     if platform_tag == "linux":
         import subprocess as _sp
@@ -347,8 +365,83 @@ def _start_realtime_speaker(
             rt["pcm_pump"] = proc
         except FileNotFoundError:
             state.set(error="paplay not found — install pulseaudio-utils for realtime on Linux")
-    # macOS: the caller must route BlackHole manually; we write to disk
-    # only. A future helper could spawn `afplay` or `sox play` in a loop.
+    elif platform_tag == "darwin":
+        # macOS: use ffmpeg to tail-read speaker.pcm and write it to the
+        # BlackHole output device. The user must have BlackHole selected
+        # as the default input in System Settings → Sound for Chrome to
+        # pick it up. We prefer ffmpeg because it's scriptable and can
+        # target AVFoundation devices by name; fall back to afplay-ing
+        # the file in a tight loop if ffmpeg is absent.
+        import shutil as _shutil
+        import subprocess as _sp
+
+        device_name = (bridge_info or {}).get("write_target") or "BlackHole 2ch"
+        if _shutil.which("ffmpeg"):
+            try:
+                # -re: read input at native frame rate.
+                # -f avfoundation -i: speaker path as raw PCM.
+                # -f s16le -ar 24000 -ac 1 -i <pcm>: interpret the file.
+                # -f audiotoolbox -audio_device_index: write to BlackHole.
+                # Simpler: output as raw via coreaudio using "-f audiotoolbox".
+                # ffmpeg's audiotoolbox output picks the current default
+                # output device, which isn't what we want. Instead we use
+                # -f avfoundation with the named device as OUTPUT via
+                # -vn and the device name.
+                proc = _sp.Popen(
+                    [
+                        "ffmpeg",
+                        "-nostdin", "-hide_banner", "-loglevel", "error",
+                        "-re",
+                        "-f", "s16le", "-ar", "24000", "-ac", "1",
+                        "-i", str(pcm_path),
+                        "-f", "audiotoolbox",
+                        "-audio_device_index", _mac_audio_device_index(device_name),
+                        "-",
+                    ],
+                    stdin=_sp.DEVNULL,
+                    stdout=_sp.DEVNULL,
+                    stderr=_sp.DEVNULL,
+                )
+                rt["pcm_pump"] = proc
+            except FileNotFoundError:
+                state.set(error="ffmpeg not found — install via `brew install ffmpeg` for realtime on macOS")
+            except Exception as e:
+                state.set(error=f"macOS pcm pump failed to start: {e}")
+        else:
+            state.set(error="ffmpeg not found — install via `brew install ffmpeg` for realtime on macOS")
+
+
+def _mac_audio_device_index(device_name: str) -> str:
+    """Return the ffmpeg ``-audio_device_index`` for *device_name*, as a string.
+
+    Probes ``ffmpeg -f avfoundation -list_devices true -i ''`` (which prints
+    the device table on stderr) and matches *device_name* case-insensitively.
+    Defaults to ``"0"`` if the device can't be found — caller will get a
+    misrouted stream but not a crash, and the error will be obvious.
+    """
+    import subprocess as _sp
+
+    try:
+        out = _sp.run(
+            ["ffmpeg", "-f", "avfoundation", "-list_devices", "true", "-i", ""],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except Exception:
+        return "0"
+    # ffmpeg prints the table on stderr. Lines look like:
+    #   [AVFoundation indev @ 0x...] [0] BlackHole 2ch
+    import re as _re
+
+    needle = device_name.strip().lower()
+    for line in (out.stderr or "").splitlines():
+        m = _re.search(r"\[(\d+)\]\s+(.+)$", line)
+        if not m:
+            continue
+        if m.group(2).strip().lower() == needle:
+            return m.group(1)
+    return "0"
 
 
 def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
@@ -488,7 +581,10 @@ def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
             except Exception as e:
                 state.set(error=f"caption observer install failed: {e}")
 
-            state.set(in_call=True, captioning=True, joined_at=time.time())
+            # Note: in_call=False until admission is confirmed (we detect
+            # either the Leave button or the caption region, signalling we
+            # made it past the lobby).
+            state.set(captioning=True, join_attempted_at=time.time())
 
             # v2 realtime: start the speaker thread reading from the
             # plugin-side say queue. The thread reads JSONL lines written by
@@ -506,29 +602,90 @@ def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
                     stop_flag=stop_flag,
                     state=state,
                 )
+                if rt["session"] is not None:
+                    state.set(realtime_ready=True)
 
-            # Drain loop — pull queued captions every ~1s until SIGTERM or
-            # duration expiry. Also poll the page for the "You've left the
-            # meeting" state.
+            # Admission + drain loop. Runs until SIGTERM, duration expiry,
+            # or the page detects "You were removed / you left the
+            # meeting". Responsible for:
+            #   * detecting admission (Leave button visible → in_call=True)
+            #   * timing out stuck-in-lobby (default 5 minutes)
+            #   * draining scraped captions into the transcript
+            #   * triggering realtime barge-in when a human speaks while
+            #     the bot is generating audio
+            #   * periodically flushing realtime counters into status.json
             deadline = (time.time() + duration_s) if duration_s else None
+            lobby_deadline = time.time() + float(
+                os.environ.get("HERMES_MEET_LOBBY_TIMEOUT", "300")
+            )
+            last_admission_check = 0.0
             while not stop_flag["stop"]:
-                if deadline and time.time() > deadline:
+                now = time.time()
+                if deadline and now > deadline:
+                    state.set(leave_reason="duration_expired")
                     break
+
+                # Admission detection every ~3s until admitted.
+                if not state.in_call and (now - last_admission_check) > 3.0:
+                    last_admission_check = now
+                    admitted = _detect_admission(page)
+                    if admitted:
+                        state.set(
+                            in_call=True,
+                            lobby_waiting=False,
+                            joined_at=now,
+                        )
+                    elif now > lobby_deadline:
+                        state.set(
+                            error=(
+                                "lobby timeout — host never admitted the bot "
+                                f"within {int(lobby_deadline - state.join_attempted_at) if state.join_attempted_at else 0}s"
+                            ),
+                            leave_reason="lobby_timeout",
+                        )
+                        break
+                    elif _detect_denied(page):
+                        state.set(
+                            error="host denied admission",
+                            leave_reason="denied",
+                        )
+                        break
+
                 try:
                     queued = page.evaluate("window.__hermesMeetDrain && window.__hermesMeetDrain()")
                     if isinstance(queued, list):
                         for entry in queued:
                             if not isinstance(entry, dict):
                                 continue
-                            state.record_caption(
-                                speaker=str(entry.get("speaker", "")),
-                                text=str(entry.get("text", "")),
-                            )
+                            speaker = str(entry.get("speaker", ""))
+                            text = str(entry.get("text", ""))
+                            state.record_caption(speaker=speaker, text=text)
+                            # Barge-in: if the bot is currently generating
+                            # audio AND a real human just spoke, cancel the
+                            # in-flight response so we don't talk over them.
+                            if rt["enabled"] and rt["session"] is not None:
+                                if _looks_like_human_speaker(speaker, guest_name):
+                                    try:
+                                        cancelled = rt["session"].cancel_response()
+                                        if cancelled:
+                                            state.set(last_barge_in_at=now)
+                                    except Exception:
+                                        pass
                 except Exception:
                     # Meet reloaded or we got booted — try to detect and
                     # exit gracefully rather than spinning.
                     if page.is_closed():
+                        state.set(leave_reason="page_closed")
                         break
+
+                # Fold the realtime session's byte/timestamp counters into
+                # the status file so meet_status can surface them.
+                if rt["session"] is not None:
+                    state.set(
+                        audio_bytes_out=getattr(rt["session"], "audio_bytes_out", 0),
+                        last_audio_out_at=getattr(rt["session"], "last_audio_out_at", None),
+                    )
+
                 time.sleep(1.0)
 
             # Try to leave cleanly — click "Leave call" button if present.
@@ -580,6 +737,80 @@ def _try_guest_name(page, guest_name: str) -> None:
             locator.fill(guest_name, timeout=2_000)
     except Exception:
         pass
+
+
+def _detect_admission(page) -> bool:
+    """True if we're clearly past the lobby and in the call itself.
+
+    Uses a JS-side probe because Meet's DOM structure varies by client
+    version. We check several high-signal indicators and declare admission
+    on the first hit:
+
+      1. Leave-call button is present (``aria-label`` contains "eave call").
+      2. Caption region has appeared (we installed the observer and it attached).
+      3. The participant list container is visible.
+
+    Conservative by default — returns False on any error.
+    """
+    probe = r"""
+    (() => {
+      const leave = document.querySelector('button[aria-label*="eave call" i]');
+      if (leave) return true;
+      if (window.__hermesMeetInstalled) {
+        const caps = document.querySelector(
+          '[role="region"][aria-label*="aption" i], ' +
+          'div[jsname="YSxPC"], div[jsname="tgaKEf"]'
+        );
+        if (caps) return true;
+      }
+      const parts = document.querySelector('[aria-label*="articipants" i]');
+      if (parts) return true;
+      return false;
+    })();
+    """
+    try:
+        return bool(page.evaluate(probe))
+    except Exception:
+        return False
+
+
+def _detect_denied(page) -> bool:
+    """True when Meet is showing a 'you were denied' / 'no one admitted' page."""
+    probe = r"""
+    (() => {
+      const text = document.body ? document.body.innerText || '' : '';
+      // English only — matches what shows up when the host denies or
+      // removes a guest.
+      if (/You can't join this video call/i.test(text)) return true;
+      if (/You were removed from the meeting/i.test(text)) return true;
+      if (/No one responded to your request to join/i.test(text)) return true;
+      return false;
+    })();
+    """
+    try:
+        return bool(page.evaluate(probe))
+    except Exception:
+        return False
+
+
+def _looks_like_human_speaker(speaker: str, bot_guest_name: str) -> bool:
+    """Whether a caption line's speaker is probably a human, not our bot echo.
+
+    Meet attributes captions to the speaker's display name. When Chrome is
+    reading our fake mic, Meet still attributes captions to *our* bot name
+    (because the bot is the one "speaking"). We don't want those to trigger
+    barge-in. Anything else — real participant names — does.
+
+    Conservative: unknown / blank speakers (common when caption scraping
+    falls back to raw text) do NOT trigger barge-in, because we can't tell
+    whether it was a human or us.
+    """
+    if not speaker or not speaker.strip():
+        return False
+    spk = speaker.strip().lower()
+    if spk in ("unknown", "you", bot_guest_name.strip().lower()):
+        return False
+    return True
 
 
 def _click_join(page, state: _BotState) -> None:

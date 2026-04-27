@@ -44,6 +44,9 @@ class RealtimeSession:
         sess.connect()
         sess.speak("Hello team.")
         sess.close()
+
+    Thread safety: ``speak`` and ``cancel_response`` may be called from
+    different threads; a lock serializes WebSocket writes.
     """
 
     def __init__(
@@ -55,6 +58,7 @@ class RealtimeSession:
         audio_sink_path: Optional[Path] = None,
         sample_rate: int = 24000,
     ) -> None:
+        import threading as _threading
         self.api_key = api_key
         self.model = model
         self.voice = voice
@@ -62,6 +66,11 @@ class RealtimeSession:
         self.audio_sink_path = Path(audio_sink_path) if audio_sink_path else None
         self.sample_rate = sample_rate
         self._ws: Any = None
+        self._send_lock = _threading.Lock()
+        self._last_response_id: Optional[str] = None
+        # Public counters for status reporting.
+        self.audio_bytes_out: int = 0
+        self.last_audio_out_at: Optional[float] = None
 
     # ── lifecycle ─────────────────────────────────────────────────────────
 
@@ -166,8 +175,15 @@ class RealtimeSession:
                             chunk = b""
                         if chunk:
                             sink_fp.write(chunk)
+                            sink_fp.flush()
                             bytes_written += len(chunk)
-                elif ftype in ("response.done", "response.completed"):
+                            self.audio_bytes_out += len(chunk)
+                            self.last_audio_out_at = time.time()
+                elif ftype == "response.created":
+                    rid = (frame.get("response") or {}).get("id")
+                    if rid:
+                        self._last_response_id = rid
+                elif ftype in ("response.done", "response.completed", "response.cancelled"):
                     break
                 elif ftype == "error":
                     err = frame.get("error") or frame
@@ -188,9 +204,26 @@ class RealtimeSession:
 
     # ── ws plumbing ───────────────────────────────────────────────────────
 
+    def cancel_response(self) -> bool:
+        """Interrupt the in-flight response (barge-in).
+
+        Sends ``response.cancel`` on the current WebSocket so the model
+        stops generating audio immediately. Safe to call at any time;
+        returns True if a cancel was actually sent, False when there's
+        nothing to cancel or the socket isn't open.
+        """
+        if self._ws is None:
+            return False
+        try:
+            self._send_json({"type": "response.cancel"})
+            return True
+        except Exception:
+            return False
+
     def _send_json(self, payload: dict) -> None:
         assert self._ws is not None
-        self._ws.send(json.dumps(payload))
+        with self._send_lock:
+            self._ws.send(json.dumps(payload))
 
     def _recv(self, timeout: Optional[float] = None):
         assert self._ws is not None
