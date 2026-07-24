@@ -1,0 +1,139 @@
+{
+  "commentTypes": [
+    "logic",
+    "syntax"
+  ],
+  "strictness": 2,
+  "triggerOnUpdates": true,
+  "statusCheck": true,
+  "statusCommentsEnabled": true,
+  "comment": "AI-generated review; verified tests, required checks, and human approval remain merge gates.",
+  "instructions": "Review for exploitable security, authorization, correctness, data-integrity, concurrency, and production-readiness defects. Require file and line evidence. Avoid style-only comments and never treat generated prose as proof of testing.",
+  "ignoreKeywords": "greptile-ignore",
+  "ignorePatterns": ".venv/**\nvenv/**\n__pycache__/**\n.pytest_cache/**\n.mypy_cache/**\ndist/**\nbuild/**\ncoverage/**",
+  "summarySection": {
+    "included": true,
+    "collapsible": false,
+    "defaultOpen": false
+  },
+  "issuesTableSection": {
+    "included": true,
+    "collapsible": false,
+    "defaultOpen": false
+  },
+  "confidenceScoreSection": {
+    "included": true,
+    "collapsible": false,
+    "defaultOpen": false
+  },
+  "customContext": {
+    "rules": [
+      {
+        "scope": [
+          "**/*"
+        ],
+        "rule": "EVIDENCE: report only actionable defects with file:line evidence, a concrete failure mode, and a concise remediation. Do not report formatting or preference-only issues."
+      },
+      {
+        "scope": [
+          "**/*"
+        ],
+        "rule": "AUTHZ: server-side mutations must derive identity from a verified session and re-check ownership or role. Flag trust in client-supplied identities, roles, tenant IDs, or resource ownership."
+      },
+      {
+        "scope": [
+          "**/*"
+        ],
+        "rule": "SECRETS: flag hardcoded credentials, private keys, tokens, cookies, secrets in logs, and server-only values exposed to clients. Example values must be unmistakable placeholders."
+      },
+      {
+        "scope": [
+          "**/*"
+        ],
+        "rule": "FAIL-CLOSED: authentication, authorization, internal tools, deployment gates, and security controls must deny by default when configuration is missing or invalid."
+      },
+      {
+        "scope": [
+          "**/*"
+        ],
+        "rule": "INPUT: validate and bound untrusted input at the boundary. Flag unsafe parsing, path traversal, injection, NaN/Infinity, unbounded payloads, and missing schema validation."
+      },
+      {
+        "scope": [
+          "**/*"
+        ],
+        "rule": "IDEMPOTENCY: webhooks, jobs, imports, billing, settlement, and retryable handlers must not duplicate irreversible effects when replayed."
+      },
+      {
+        "scope": [
+          "**/*"
+        ],
+        "rule": "CONCURRENCY: flag read-then-write races, missing transactions or locks, unsafe shared state, non-atomic ledger/balance changes, and duplicate worker execution."
+      },
+      {
+        "scope": [
+          "**/*"
+        ],
+        "rule": "DEPENDENCIES: flag unpinned executable downloads, unsafe install hooks, dependency-confusion exposure, and upgrades that violate runtime or lockfile contracts."
+      },
+      {
+        "scope": [
+          "**/*"
+        ],
+        "rule": "TESTS: behavior changes need regression coverage at the failure boundary. Flag tests that mock away the critical behavior or assertions that cannot fail for the defect."
+      },
+      {
+        "scope": [
+          "**/*.py"
+        ],
+        "rule": "PYTHON CORRECTNESS: flag swallowed exceptions, mutable defaults, unsafe deserialization, shell injection, blocking calls in async paths, resource leaks, and broad exception handling that converts failure into success."
+      },
+      {
+        "scope": [
+          "**/api/**",
+          "**/routes/**",
+          "**/views/**",
+          "**/handlers/**"
+        ],
+        "rule": "PYTHON API: verify authentication and authorization before side effects, validate typed inputs at runtime, constrain file/network access, and avoid returning secrets or internal exception detail."
+      },
+      {
+        "scope": [
+          "**/models/**",
+          "**/migrations/**",
+          "alembic/**",
+          "**/*.sql"
+        ],
+        "rule": "DATABASE: flag non-atomic state changes, N+1 or unbounded queries on request paths, unsafe migrations, missing tenant filters, SQL injection, and privileged functions exposed broadly."
+      },
+      {
+        "scope": [
+          "pyproject.toml",
+          "requirements*.txt",
+          "uv.lock",
+          "poetry.lock",
+          "Dockerfile",
+          ".github/workflows/**"
+        ],
+        "rule": "PYTHON SUPPLY CHAIN: require reproducible dependency resolution and flag unpinned deploy inputs, unsafe package sources, and runtime-version drift."
+      },
+      {
+        "scope": ["run_agent.py", "model_tools.py", "agent/**"],
+        "rule": "AGENT LOOP: preserve prompt-cache invariants, iteration budgets, interrupt handling, tool-result ordering, and tenant/session isolation. Flag past-context mutation, mid-session toolset changes, or credential leakage."
+      },
+      {
+        "scope": ["plugins/**", "tools/**", "toolsets.py"],
+        "rule": "EXTENSIONS: prefer plugin surfaces for local or optional behavior. Built-in tools must register through the registry, return JSON strings, appear in an intentional toolset, and never hardcode plugin-specific logic into core."
+      },
+      {
+        "scope": ["gateway/**", "cron/**", "plugins/kanban/**"],
+        "rule": "DURABLE OPERATIONS: preserve gateway command bypass guards, scoped credential locks, cron deduplication and time bounds, Kanban board isolation, replay safety, and fail-closed delivery behavior."
+      },
+      {
+        "scope": ["hermes_constants.py", "hermes_cli/**", "tests/**"],
+        "rule": "PROFILE SAFETY: all runtime state paths must use get_hermes_home(), user-facing paths must use display_hermes_home(), and tests must isolate HOME/HERMES_HOME without touching real user state."
+      }
+    ],
+    "files": []
+  }
+}
