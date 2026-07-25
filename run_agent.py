@@ -2635,6 +2635,11 @@ class AIAgent:
         old_model = self.model
         old_provider = self.provider
 
+        # A configured context override belongs to the startup model. Carrying
+        # it across a live switch can make the new model exceed its real
+        # context window; target custom-provider overrides are resolved below.
+        self._config_context_length = None
+
         # ── Swap core runtime fields ──
         self.model = new_model
         self.provider = new_provider
