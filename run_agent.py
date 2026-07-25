@@ -2635,9 +2635,9 @@ class AIAgent:
         old_model = self.model
         old_provider = self.provider
 
-        # Clear the per-config context_length override so the new model's
-        # actual context window is resolved via get_model_context_length()
-        # instead of inheriting the stale value from the previous model.
+        # A configured context override belongs to the startup model. Carrying
+        # it across a live switch can make the new model exceed its real
+        # context window; target custom-provider overrides are resolved below.
         self._config_context_length = None
 
         # ── Swap core runtime fields ──

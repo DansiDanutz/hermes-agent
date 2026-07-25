@@ -263,10 +263,14 @@ class TestPackaging:
         content = toml_path.read_text()
         assert 'bedrock = ["boto3' in content
 
-    def test_bedrock_in_all_extra(self):
+    def test_bedrock_remains_a_standalone_lazy_extra(self):
         from pathlib import Path
-        content = (Path(__file__).parent.parent.parent / "pyproject.toml").read_text()
-        assert '"hermes-agent[bedrock]"' in content
+        root = Path(__file__).parent.parent.parent
+        content = (root / "pyproject.toml").read_text()
+        lazy_deps = (root / "tools" / "lazy_deps.py").read_text()
+        all_extra = content.split("all = [", 1)[1].split("\n]", 1)[0]
+        assert '"hermes-agent[bedrock]"' not in all_extra
+        assert '"provider.bedrock"' in lazy_deps
 
 
 # ---------------------------------------------------------------------------

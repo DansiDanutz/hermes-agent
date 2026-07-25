@@ -21,6 +21,20 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  node-security:
+    name: Root Node dependency gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+
+      - name: Install reviewed dependency graph
+        run: npm ci
+
+      - name: Block high and critical production vulnerabilities
+        run: npm audit --omit=dev --audit-level=high
+
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -41,7 +55,10 @@ jobs:
         run: |
           uv venv .venv --python 3.11
           source .venv/bin/activate
-          uv pip install -e ".[all,dev]"
+          # Exercise optional integrations without adding them back to the
+          # cross-platform `all` extra. Matrix remains excluded because
+          # python-olm cannot be installed consistently on every runner OS.
+          uv pip install -e ".[all,dev,bedrock,voice,dingtalk,feishu]"
 
       - name: Run tests
         run: |
@@ -73,7 +90,7 @@ jobs:
         run: |
           uv venv .venv --python 3.11
           source .venv/bin/activate
-          uv pip install -e ".[all,dev]"
+          uv pip install -e ".[all,dev,bedrock,voice,dingtalk,feishu]"
 
       - name: Run e2e tests
         run: |

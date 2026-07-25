@@ -1,4 +1,4 @@
-"""Tests that switch_model preserves config_context_length."""
+"""Tests that switch_model does not leak model-specific context overrides."""
 
 from unittest.mock import MagicMock, patch
 
@@ -19,7 +19,7 @@ def _make_agent_with_compressor(config_context_length=None) -> AIAgent:
     agent.client = MagicMock()
     agent.quiet_mode = True
 
-    # Store config_context_length for later use in switch_model
+    # Simulate a context override attached to the startup model.
     agent._config_context_length = config_context_length
 
     # Context compressor with primary model values
@@ -41,8 +41,8 @@ def _make_agent_with_compressor(config_context_length=None) -> AIAgent:
 
 
 @patch("agent.model_metadata.get_model_context_length", return_value=131_072)
-def test_switch_model_preserves_config_context_length(mock_ctx_len):
-    """When switching models, config_context_length should be passed to get_model_context_length."""
+def test_switch_model_clears_previous_config_context_length(mock_ctx_len):
+    """A startup model's context override must not apply to a new model."""
     agent = _make_agent_with_compressor(config_context_length=32_768)
 
     assert agent.context_compressor.model == "primary-model"
@@ -51,10 +51,10 @@ def test_switch_model_preserves_config_context_length(mock_ctx_len):
     # Switch model
     agent.switch_model("new-model", "openrouter", api_key="sk-new", base_url="https://openrouter.ai/api/v1")
 
-    # Verify get_model_context_length was called with config_context_length
+    # The new model resolves its own metadata instead of inheriting 32K.
     mock_ctx_len.assert_called_once()
     call_kwargs = mock_ctx_len.call_args.kwargs
-    assert call_kwargs.get("config_context_length") == 32_768
+    assert call_kwargs.get("config_context_length") is None
 
     # Verify compressor was updated
     assert agent.context_compressor.model == "new-model"

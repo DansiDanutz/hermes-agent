@@ -62,6 +62,7 @@ jobs:
       # the three sources of truth and skip vendored / test / worktree dirs.
       scan-args: |-
         --lockfile=uv.lock
+        --lockfile=package-lock.json
         --lockfile=ui-tui/package-lock.json
         --lockfile=website/package-lock.json
       fail-on-vuln: false

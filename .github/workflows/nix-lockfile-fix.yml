@@ -175,6 +175,15 @@ jobs:
               repo: context.repo.repo,
               pull_number: Number(prNumber),
             });
+            // The next steps execute the checked-out branch and receive a
+            // write-capable token plus CACHIX_AUTH_TOKEN. Never run them from
+            // an untrusted fork, even when a maintainer edited the checkbox.
+            if (pr.head.repo.full_name !== `${context.repo.owner}/${context.repo.repo}`) {
+              core.setFailed(
+                `Refusing privileged lockfile repair for fork ${pr.head.repo.full_name}`
+              );
+              return;
+            }
             core.setOutput('ref', pr.head.ref);
             core.setOutput('repo', pr.head.repo.name);
             core.setOutput('owner', pr.head.repo.owner.login);

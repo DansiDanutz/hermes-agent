@@ -737,7 +737,11 @@ class TestMatrixRequirements:
             import mautrix  # noqa: F401
             assert check_matrix_requirements() is True
         except ImportError:
-            assert check_matrix_requirements() is False
+            # Requirement probes must not make this unit test depend on a
+            # network-backed lazy install. Dedicated lazy-dependency tests
+            # cover successful installation separately.
+            with patch("tools.lazy_deps.ensure", side_effect=RuntimeError("offline")):
+                assert check_matrix_requirements() is False
 
     def test_check_requirements_without_creds(self, monkeypatch):
         monkeypatch.delenv("MATRIX_ACCESS_TOKEN", raising=False)
