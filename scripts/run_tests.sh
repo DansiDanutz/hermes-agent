@@ -114,7 +114,11 @@ cd "$REPO_ROOT"
 
 # If the first argument starts with `-` treat all args as pytest flags;
 # otherwise treat them as test paths.
-ARGS=("$@")
+if [ "$#" -eq 0 ]; then
+  ARGS=(tests/)
+else
+  ARGS=("$@")
+fi
 
 echo "▶ running pytest with $WORKERS workers, hermetic env, in $REPO_ROOT"
 echo "  (TZ=UTC LANG=C.UTF-8 PYTHONHASHSEED=0; all credential env vars unset)"

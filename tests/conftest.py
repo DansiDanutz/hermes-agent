@@ -158,6 +158,21 @@ def _looks_like_credential(name: str) -> bool:
     return any(name.endswith(suf) for suf in _CREDENTIAL_SUFFIXES)
 
 
+@pytest.fixture(autouse=True)
+def _block_live_macos_keychain(request, monkeypatch):
+    """Keep ordinary tests from reading a developer's real Keychain.
+
+    The dedicated keychain test module mocks the platform command itself and
+    remains the only suite surface allowed to exercise this lookup path.
+    """
+    if request.path.name == "test_anthropic_keychain.py":
+        return
+    monkeypatch.setattr(
+        "agent.anthropic_adapter._read_claude_code_credentials_from_keychain",
+        lambda: None,
+    )
+
+
 # HERMES_* vars that change test behavior by being set. Unset all of these
 # unconditionally — individual tests that need them set do so explicitly.
 _HERMES_BEHAVIORAL_VARS = frozenset({
