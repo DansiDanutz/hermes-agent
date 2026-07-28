@@ -1,8 +1,9 @@
 name: OSV-Scanner
 
 # Scans lockfiles (uv.lock, package-lock.json) against the OSV vulnerability
-# database. Runs on every PR that touches a lockfile and on a weekly schedule
-# against main.
+# database. Runs on every PR and main push because branch protection requires
+# its status; path-filtering a required workflow would leave unrelated PRs
+# permanently blocked. A weekly schedule also catches newly published CVEs.
 #
 # This is detection-only — OSV-Scanner does NOT open PRs or modify pins.
 # It reports known CVEs in currently-pinned dependency versions so we can
@@ -22,34 +23,8 @@ name: OSV-Scanner
 on:
   pull_request:
     branches: [main]
-    paths:
-      - 'uv.lock'
-      - 'pyproject.toml'
-      - 'package.json'
-      - 'package-lock.json'
-      - 'scripts/whatsapp-bridge/package.json'
-      - 'scripts/whatsapp-bridge/package-lock.json'
-      - 'ui-tui/package.json'
-      - 'ui-tui/package-lock.json'
-      - 'ui-tui/packages/hermes-ink/package.json'
-      - 'ui-tui/packages/hermes-ink/package-lock.json'
-      - 'web/package.json'
-      - 'web/package-lock.json'
-      - 'website/package.json'
-      - 'website/package-lock.json'
-      - '.github/workflows/osv-scanner.yml'
   push:
     branches: [main]
-    paths:
-      - 'uv.lock'
-      - 'pyproject.toml'
-      - 'package.json'
-      - 'package-lock.json'
-      - 'scripts/whatsapp-bridge/package-lock.json'
-      - 'ui-tui/package-lock.json'
-      - 'ui-tui/packages/hermes-ink/package-lock.json'
-      - 'web/package-lock.json'
-      - 'website/package-lock.json'
   schedule:
     # Weekly scan against main — catches CVEs published after merge for
     # deps that haven't changed since.
