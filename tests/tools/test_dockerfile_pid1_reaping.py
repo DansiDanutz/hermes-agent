@@ -10,6 +10,8 @@ the properties required for correct production behaviour:
   instead of accumulating as zombies (#15012).
 - Signal forwarding runs through the init so ``docker stop`` triggers
   hermes's own graceful-shutdown path.
+- The container uses the supported Node 22 runtime required by the root
+  browser dependency graph, independently of the final distribution's packages.
 """
 
 from __future__ import annotations
@@ -119,6 +121,25 @@ def test_dockerfile_installs_tui_dependencies(dockerfile_text):
         "ui-tui" in step and "npm" in step and (" install" in step or " ci" in step)
         for step in _run_steps(dockerfile_text)
     )
+
+
+def test_dockerfile_uses_digest_pinned_node_22_runtime(dockerfile_text):
+    """The image must not silently fall back to Debian's unsupported Node 20."""
+    instructions = _dockerfile_instructions(dockerfile_text)
+    node_sources = [
+        instruction
+        for instruction in instructions
+        if instruction.startswith("FROM node:22.") and " AS node_source" in instruction
+    ]
+
+    assert len(node_sources) == 1
+    assert "@sha256:" in node_sources[0]
+    assert "COPY --from=node_source /usr/local/ /usr/local/" in instructions
+
+    apt_steps = [step for step in _run_steps(dockerfile_text) if "apt-get install" in step]
+    assert apt_steps
+    assert all(" nodejs" not in step and " npm" not in step for step in apt_steps)
+    assert "npm_config_engine_strict=true" in dockerfile_text
 
 
 def test_dockerfile_builds_tui_assets(dockerfile_text):
