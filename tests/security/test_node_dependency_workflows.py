@@ -59,3 +59,14 @@ def test_every_node_lockfile_has_blocking_audit_and_osv_coverage() -> None:
 
         assert matrix_entry in configured_policy
         assert f"--lockfile={lockfile}" in osv_workflow
+
+
+def test_required_osv_check_runs_on_every_pr_and_main_push() -> None:
+    """A required check must not disappear behind workflow path filters."""
+    workflow = yaml.load(OSV_WORKFLOW.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+    triggers = workflow["on"]
+
+    assert triggers["pull_request"]["branches"] == ["main"]
+    assert triggers["push"]["branches"] == ["main"]
+    assert "paths" not in triggers["pull_request"]
+    assert "paths" not in triggers["push"]
