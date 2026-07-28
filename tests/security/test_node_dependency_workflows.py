@@ -20,8 +20,10 @@ def test_every_node_lockfile_has_blocking_audit_and_osv_coverage() -> None:
     osv_workflow = OSV_WORKFLOW.read_text(encoding="utf-8")
 
     assert "npm audit --omit=dev --audit-level=${{ matrix.audit-level }}" in tests_workflow
+    assert "node-version: ${{ matrix.node-version }}" in tests_workflow
     assert "node-version: 20" in tests_workflow
-    assert 'NPM_CONFIG_ENGINE_STRICT: "true"' in tests_workflow
+    assert "node-version: 22" in tests_workflow
+    assert "NPM_CONFIG_ENGINE_STRICT: ${{ matrix.engine-strict }}" in tests_workflow
 
     for lockfile in _production_lockfiles():
         directory = str(Path(lockfile).parent).replace("\\", "/")

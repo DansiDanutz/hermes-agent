@@ -31,18 +31,32 @@ jobs:
         include:
           - directory: .
             audit-level: high
+            engine-strict: true
+            node-version: 22
           - directory: scripts/whatsapp-bridge
             audit-level: high
+            engine-strict: true
+            node-version: 20
           - directory: ui-tui
             audit-level: high
+            engine-strict: true
+            node-version: 20
           - directory: ui-tui/packages/hermes-ink
             audit-level: high
+            # This source-only package inherits Ink 6 from ui-tui in runtime;
+            # its standalone peer-resolution graph installs Ink 7 for tests.
+            engine-strict: false
+            node-version: 20
           - directory: web
             # react-router-dom 7.18.1 is the newest browser package, while
             # the remaining high advisory only affects its unused RSC mode.
             audit-level: critical
+            engine-strict: true
+            node-version: 20
           - directory: website
             audit-level: high
+            engine-strict: true
+            node-version: 20
     steps:
       - name: Checkout code
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
@@ -50,13 +64,13 @@ jobs:
       - name: Set up minimum supported Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
         with:
-          node-version: 20
+          node-version: ${{ matrix.node-version }}
 
       - name: Install reviewed dependency graph
         run: npm ci
         working-directory: ${{ matrix.directory }}
         env:
-          NPM_CONFIG_ENGINE_STRICT: "true"
+          NPM_CONFIG_ENGINE_STRICT: ${{ matrix.engine-strict }}
 
       - name: Block high and critical production vulnerabilities
         run: npm audit --omit=dev --audit-level=${{ matrix.audit-level }}
