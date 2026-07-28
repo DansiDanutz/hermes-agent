@@ -47,9 +47,16 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
 
+      - name: Set up minimum supported Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        with:
+          node-version: 20
+
       - name: Install reviewed dependency graph
         run: npm ci
         working-directory: ${{ matrix.directory }}
+        env:
+          NPM_CONFIG_ENGINE_STRICT: "true"
 
       - name: Block high and critical production vulnerabilities
         run: npm audit --omit=dev --audit-level=${{ matrix.audit-level }}

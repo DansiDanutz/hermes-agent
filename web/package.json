@@ -51,6 +51,6 @@
   },
   "overrides": {
     "postcss": "8.5.23",
-    "sanitize-html": "2.17.6"
+    "sanitize-html": "2.17.5"
   }
 }
